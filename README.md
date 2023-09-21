@@ -56,15 +56,15 @@
 构建工作可依据tensorrt_llm_july-release-v1/examples/opt这个文件进行，按照README中的逻辑去继续构建。此处我选择直接使用gpt2的代码继续构建。这样更加直观的看到构建的流程。
 
 
-- 1、通过Qwen-7B-chat-for-TRT-LLM/tensorrt_llm_july-release-v1/examples/qwen/Quickstart.py代码中的第8行print(model) 查看模型结构如下：  
+- 1、通过Qwen-7B-chat-for-TRT-LLM/tensorrt_llm_july-release-v1/examples/qwen/Quickstart.py代码中的第8行print(model) 查看模型结构如下： 
+ **构建完成的模型位于：Qwen-7B-chat-for-TRT-LLM/tensorrt_llm_july-release-v1/tensorrt_llm/models/qwen/model.py**  
+ 模型主要由Embedding层、RotaryEmbedding（旋转编码结构）、32XModuleList（attention结构）、ln_f归一化层、lm_head（输出头部分）组成，按照图中的顺序以及gpt2的代码结构进行修改即可得到。将gpt2中的各个层换为qwen层，并注意逻辑。其中成员函数__init__，forward的参数不需要进行更改，QWenAttention层使用Attention进行修改，并在模型build时使用
+ 
 - ![Alt text](image.png)  
 同理我们也可以查看个gpt2的模型结构：
 - ![Alt text](image-2.png)    
 由两者的模型结构可知其在模型上有一些区别，由此我们可以使用example的gpt2的代码逻辑，来进行qwen的模型构建。  
 
-**构建完成的模型位于：Qwen-7B-chat-for-TRT-LLM/tensorrt_llm_july-release-v1/tensorrt_llm/models/qwen/model.py**
-
-模型主要由Embedding层、RotaryEmbedding（旋转编码结构）、32XModuleList（attention结构）、ln_f归一化层、lm_head（输出头部分）组成，按照图中的顺序以及gpt2的代码结构进行修改即可得到。将gpt2中的各个层换为qwen层，并注意逻辑。其中成员函数__init__，forward的参数不需要进行更改，QWenAttention层使用Attention进行修改，并在模型build时使用
 
 - 2、将模型的参数从原模型中保存为.bin文件和.ini参数文件    
   根据定义的参数名称保存为参数文件。
