@@ -19,3 +19,23 @@
 5. **支持插件调用**：Qwen-7B-Chat针对插件调用相关的对齐数据做了特定优化，当前模型能有效调用插件以及升级为Agent。
   
 （注：* 2023年8月21日 阿里云了发布Qwen-7B-Chat的Int4量化模型，Qwen-7B-Chat-Int4。本项目先对fp16精度进行优化）
+
+
+
+###送分题答案为：  
+Input: Born in north-east France, Soyer trained as a
+Output:  chef before moving to London in the late
+
+
+[08/21/2023-06:50:35] [TRT-LLM] [I] TensorRT-LLM (total latency: 2.112626552581787 sec)
+[08/21/2023-06:50:35] [TRT-LLM] [I] TensorRT-LLM beam 0 result
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge1 : 14.700185379688484
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge2 : 3.75886473151702
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeL : 12.002855916633356
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeLsum : 13.092895095507263
+[08/21/2023-06:50:35] [TRT-LLM] [I] Hugging Face (total latency: 5.047713994979858 sec)
+[08/21/2023-06:50:35] [TRT-LLM] [I] HF beam 0 result
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge1 : 14.75593024343394
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge2 : 3.3647470801871733
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeL : 11.124766996533
+[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeLsum : 13.031128048110618
