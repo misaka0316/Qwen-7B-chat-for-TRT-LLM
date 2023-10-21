@@ -10,6 +10,8 @@ from pathlib import Path
 
 import re
 
+import numpy as np
+
 import torch
 import torch.multiprocessing as multiprocessing
 from smoothquant import capture_activation_range, smooth_gemm
@@ -180,6 +182,31 @@ def hf_gpt_converter(args: ProgArgs):
                                               ] else False
     saved_dir = Path(args.out_dir) / f"{infer_tp}-gpu"
     saved_dir.mkdir(parents=True, exist_ok=True)
+
+
+    # add weight of position embedding  decode max length is 2048 保存旋转位置编码
+    nMaxSL = 8192
+    base=10000.0
+    inv_freq = 1.0 / (base ** (np.arange(0, 128, 2,dtype=np.float32) / 128))
+    # inv_freq = 10**(-1 / 16 * np.arange(0, 64, 2, dtype=np.float32))
+    valueTable = np.matmul(
+        np.arange(nMaxSL, dtype=np.float32).reshape(-1, 1),
+        np.concatenate([inv_freq, inv_freq],
+                       axis=0).reshape(1, -1)).reshape(nMaxSL,
+                                                       len(inv_freq) * 2)  # shape is [2048,64] the relate is for postions
+    # valueTable=rearrange(valueTable, "n d -> 1 n 1 d")
+    cos = np.cos(valueTable) #[:,:64]
+    cos = cos.astype(storage_type).tofile(saved_dir /
+                                                   "model.cosTable.weight.bin")
+    
+    sin = np.sin(valueTable)#[:,:64]
+
+    sin = sin.astype(storage_type).tofile(saved_dir /
+                                                   "model.sinTable.weight.bin")
+    print("Save model.cosTable.weight.bin")
+    print("Save model.sinTable.weight.bin")
+
+
 
     # load position_embedding from rank 0
     model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen-7B-Chat",

@@ -400,7 +400,7 @@ def build_rank_engine(builder: Builder,
         for k, v in tensorrt_llm_qwen.named_network_outputs():
             network._mark_output(v, k,
                                  tensorrt_llm.str_dtype_to_trt(args.dtype))
-        # -------------------------------------------------- -------------------------------------- 
+        # -----------------------------------------------------------------
 
     engine = None
 

@@ -7,19 +7,21 @@ import numpy as np
 
 from ...logger import logger
 #添加通用层
-from ..._common import default_net
+from ..._common import default_net,default_trtnet, precision
 from ..._utils import pad_vocab_size, str_dtype_to_trt
 #添加变量的定义
 from ...functional import (RaggedTensor, Tensor, assertion, expand_mask,
                            gather_last_token_logits, is_gated_activation,
-                           non_gated_version, shape , silu, arange, outer, 
-                            cos, sin, slice, concat, view, unsqueeze, constant)
+                           non_gated_version, shape , silu, arange, outer, expand,gather,
+                            cos, sin, slice, concat, view, unsqueeze, constant ,_create_tensor)
 #添加具体的层
 from ...layers import (MLP, Attention, AttentionMaskType, ColumnLinear,
                        Embedding, GatedMLP, InflightBatchingParam, LayerNorm,
                        PositionEmbeddingType, PromptTuningEmbedding, RmsNorm, QWenAttention)
 from ...module import Module, ModuleList
 from ...quantization import QuantMode
+
+from ...plugin import  _TRT_LLM_PLUGIN_NAMESPACE as TRT_LLM_PLUGIN_NAMESPACE
 
 #进行模型的搭建
 
@@ -72,6 +74,18 @@ flash_attn_unpadded_func = None
 #         #对tensor进行切片操作,需要使用slice算子
 #         return [slice(cos_,concat(cos_ ,offset), concat(cos_, max_seq_len)), slice(sin_,concat(sin_ ,offset), concat(sin_, max_seq_len))] 
 
+def identity_op(tensor: Tensor) -> Tensor:
+    input_tensor = tensor.trt_tensor
+    # Create a plugin instance.
+    plugin_creator = trt.get_plugin_registry().get_plugin_creator(
+        'Identity', '1', TRT_LLM_PLUGIN_NAMESPACE)
+    assert plugin_creator is not None
+    pfc = trt.PluginFieldCollection([])
+    plugin = plugin_creator.create_plugin("identity", pfc)
+    layer = default_trtnet().add_plugin_v2([input_tensor], plugin)
+    return _create_tensor(layer.get_output(0), layer)
+
+
 class QWenMLP(Module):
     def __init__(self,
                  hidden_size,
@@ -99,7 +113,7 @@ class QWenBlock(Module):
                  num_layers,
                  dtype=None,
                  apply_query_key_layer_scaling=False,
-                 attention_mask_type=AttentionMaskType.causal,
+                 attention_mask_type=AttentionMaskType.bidirectional,
                  hidden_act = 'relu',
                  position_embedding_type=PositionEmbeddingType.learned_absolute,
                  quant_mode=QuantMode(0),
@@ -111,11 +125,11 @@ class QWenBlock(Module):
                  tp_group=None,
                  tp_size=1):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.num_attention_heads = num_attention_heads
-        self.max_position_embeddings = max_position_embeddings
-        self.num_layers = num_layers
-        self.dtype = dtype
+        # self.hidden_size = hidden_size
+        # self.num_attention_heads = num_attention_heads
+        # self.max_position_embeddings = max_position_embeddings
+        # self.num_layers = num_layers
+        # self.dtype = dtype
         self.apply_query_key_layer_scaling = apply_query_key_layer_scaling
         self.attention_mask_type = attention_mask_type
         self.position_embedding_type = position_embedding_type
@@ -144,7 +158,7 @@ class QWenBlock(Module):
             multi_query_mode=multi_query_mode,
             tp_group=tp_group,
             tp_size=tp_size,
-            # use_int8_kv_cache=quant_mode.has_int8_kv_cache()
+            use_int8_kv_cache=quant_mode.has_int8_kv_cache()
         ) 
         self.ln_2 = RmsNorm(
             hidden_size,
@@ -169,6 +183,7 @@ class QWenBlock(Module):
     def forward(
         self,
         hidden_states: RaggedTensor,
+        position_embedding,
         attention_mask=None,
         past_key_value=None,
         sequence_length=None,
@@ -186,20 +201,14 @@ class QWenBlock(Module):
         max_input_length = hidden_states.max_row_length
         hidden_states = hidden_states.data
 
-        residual = hidden_states
+        # residual = hidden_states
 
         layernorm_output = self.ln_1(hidden_states)
-
-        test_ln = self.ln_test(layernorm_output)
-
-        # register as model output
-        # ------------------------------------------------------
-        self.register_network_output('test_ln', test_ln)
-        # ------------------------------------------------------
 
         attention_output = self.attention(
             RaggedTensor.from_row_lengths(layernorm_output, input_lengths,
                                           max_input_length),
+            position_embedding,
             attention_mask=attention_mask,
             past_key_value=past_key_value,
             sequence_length=sequence_length,
@@ -214,20 +223,20 @@ class QWenBlock(Module):
         if use_cache:
             attention_output, presents = attention_output
 
-        # register as model output
-        # ------------------------------------------------------
-        self.register_network_output('attention_output', attention_output.data)
-        # ------------------------------------------------------
+        # # register as model output
+        # # ------------------------------------------------------
+        # self.register_network_output('attention_output', attention_output.data)
+        # # ------------------------------------------------------
 
-        hidden_states = residual + attention_output.data
+        hidden_states = hidden_states + attention_output.data
         
-        residual = hidden_states
+        # residual = hidden_states
 
         layernorm_output = self.ln_2(hidden_states)
 
         mlp_output = self.mlp(layernorm_output)
 
-        hidden_states = residual + mlp_output
+        hidden_states = hidden_states + mlp_output
 
         hidden_states = RaggedTensor.from_row_lengths(hidden_states,
                                                 input_lengths,
@@ -261,6 +270,16 @@ class QWenModel(Module):
                  use_parallel_embedding=False):
         super().__init__()
 
+        self.half_head_size = hidden_size // num_heads // 2    #64 
+        #以下对应RotaryEmbedding
+        self.position_embedding_cos = Embedding(max_position_embeddings,
+                                                self.half_head_size*2,
+                                                dtype=dtype)  # shape=8192,128
+        self.position_embedding_sin = Embedding(max_position_embeddings,
+                                                self.half_head_size*2,
+                                                dtype=dtype)
+
+
         self.wte = Embedding(
             vocab_size, 
             hidden_size,
@@ -292,7 +311,8 @@ class QWenModel(Module):
         )
 
     def forward(self,
-                input_ids,position_ids,
+                input_ids,
+                position_ids,
                 past_key_value=None,
                 sequence_length=None,
                 past_key_value_length=None,
@@ -308,12 +328,39 @@ class QWenModel(Module):
         
         hidden_states = self.wte(input_ids.data)
 
-        # register as model output
-        # ------------------------------------------------------
-        self.register_network_output('wte', hidden_states)
-        # ------------------------------------------------------
+        batch_size = shape(input_ids.data, 0)
+        input_len = shape(input_ids.data, 1)
 
-        position_ids = None
+        hidden_states = self.wte(input_ids.data)
+        position_embedding_cos = self.position_embedding_cos(position_ids) #  Previously calculated 
+        position_embedding_sin = self.position_embedding_sin(position_ids) #  Previously calculated 
+
+        position_embedding_cos0, position_embedding_cos1 = position_embedding_cos.split(
+            1, dim=1)
+        position_embedding_sin0, position_embedding_sin1 = position_embedding_sin.split(
+            1, dim=1)
+
+      
+        position_embedding_cos0 = position_embedding_cos0.view(
+            concat([batch_size, input_len, 1, self.half_head_size*2]))
+        position_embedding_cos1 = position_embedding_cos1.view(
+            concat([batch_size, input_len, 1, self.half_head_size*2]))
+        position_embedding_sin0 = position_embedding_sin0.view(
+            concat([batch_size, input_len, 1, self.half_head_size*2]))
+        position_embedding_sin1 = position_embedding_sin1.view(
+            concat([batch_size, input_len, 1, self.half_head_size*2]))
+
+        position_embedding = [
+            position_embedding_cos0, position_embedding_cos1,
+            position_embedding_sin0, position_embedding_sin1
+        ]
+
+        # # register as model output
+        # # ------------------------------------------------------
+        # self.register_network_output('wte', hidden_states)
+        # # ------------------------------------------------------
+
+        # position_ids = None
         # kv_seq_len = hidden_states.size()[1]
         # if past_key_value is None:
         #     past_key_value = tuple([None] * len(self.layers))
@@ -323,13 +370,9 @@ class QWenModel(Module):
         if use_cache: 
             presents = []   
 
-        if attention_mask is not None: #生成注意力掩码
-            attention_mask = expand_mask(attention_mask,
-                                         shape(input_ids.data, -1))
-        
-        # ntk_alpha = self.rotary_emb._ntk_alpha_cached
-            
-        # rotary_pos_emb = self.rotary_emb(kv_seq_len, ntk_alpha=ntk_alpha)
+        # if attention_mask is not None: #生成注意力掩码
+        #     attention_mask = expand_mask(attention_mask,
+        #                                  shape(input_ids.data, -1))
             
         hidden_states = RaggedTensor.from_row_lengths(hidden_states,
                                                       input_ids.row_lengths,
@@ -339,6 +382,7 @@ class QWenModel(Module):
                 zip(self.layers, past_key_value, kv_cache_block_pointers)):
             hidden_states = layer(
                 hidden_states,
+                position_embedding,
                 past_key_value=past,
                 sequence_length=sequence_length,
                 past_key_value_length=past_key_value_length,
@@ -355,11 +399,19 @@ class QWenModel(Module):
                 presents.append(hidden_states[1])
                 hidden_states = hidden_states[0]       
 
-        hidden_states = self.ln_f(hidden_states.data)
-        
+        # hidden_states = self.ln_f(hidden_states.data)
+        # if use_cache:
+        #     return (hidden_states, tuple(presents))
+        # return hidden_states
+
+        hidden_states=hidden_states.data
+        hidden_states_clone=identity_op(hidden_states)
+        hidden_states_final = self.ln_f(hidden_states_clone)    
+
         if use_cache:
-            return (hidden_states, tuple(presents))
-        return hidden_states
+            return (hidden_states_final, tuple(presents))
+        return hidden_states_final
+
 
 class QWenLMHeadModel(QWenModel):
 
@@ -414,8 +466,10 @@ class QWenLMHeadModel(QWenModel):
         vocab_size_padded = pad_vocab_size(vocab_size, tensor_parallel)
 
         share_weight = None
+
         if share_embedding_table == True:
             share_weight = self.embedding.vocab_embedding.weight
+
         self.lm_head = ColumnLinear(hidden_size,
                                     vocab_size_padded,
                                     bias=False,
@@ -442,6 +496,7 @@ class QWenLMHeadModel(QWenModel):
                 inflight_batching_args=None
     ):
         assert last_token_ids is not None, "Expecting last token ids to be not None"
+        
         hidden_states = super().forward(
             input_ids,position_ids, past_key_value, sequence_length,
             past_key_value_length, masked_tokens, use_cache, attention_mask,
@@ -451,12 +506,28 @@ class QWenLMHeadModel(QWenModel):
         if use_cache:
             hidden_states, presents = hidden_states
 
-        hidden_states = gather_last_token_logits(
-            hidden_states, last_token_ids,
-            default_net().plugin_config.remove_input_padding)
+        # hidden_states = gather_last_token_logits(
+        #     hidden_states, last_token_ids,
+        #     default_net().plugin_config.remove_input_padding)
+        
+
+        # only calculate logits for the last token
+        # [batch_size, seqlen, hidden_size] -> [batch_size, hidden_size]
+        last_token_ids = last_token_ids.view(
+            concat([shape(last_token_ids, 0), 1, 1]))
+        last_token_ids = expand(
+            last_token_ids,
+            concat([shape(last_token_ids, 0), 1,
+                    shape(hidden_states, 2)]))
+        last_token_ids = last_token_ids - 1
+        hidden_states = gather(
+            hidden_states, dim=1, indices=last_token_ids).view(
+                concat([shape(hidden_states, 0),
+                        shape(hidden_states, 2)]))
 
         # [batch_size, hidden_size] -> [batch_size, vocab_size]
         lm_logits = self.lm_head(hidden_states)
+        lm_logits =identity_op(lm_logits)
         lm_logits.mark_output('logits', str_dtype_to_trt('float32'))
         # out_inter.mark_output('inter', str_dtype_to_trt('float32'))
 

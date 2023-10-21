@@ -48,7 +48,7 @@
 1.qwen模型中使用了旋转编码的方式，给输入到attention的层中作为位置编码。  
 2.attention中的MLP层使用了如下的结构：  
 ![Alt text](image-1.png)  
-3、将旋转编码加入到模型中。使用numpy将旋转编码生成后使用constant函数直接放入模型的QWenAttention
+3、将旋转编码加入到模型中。使用numpy将旋转编码生成后直接放入模型的QWenAttention中
 
 - 其次：对比原模型与构建的trt-llm的每一层的层参数对比。对比后查找差距较大层进行精度调优，可以使用编写plugin或者提高参数的精度，对比层的参数排布是否正确等等。
 
@@ -92,18 +92,7 @@ TensorRT-LLM 代码目录为 /root/workspace/tensorrt_llm_july-release-v1
 由于模型部分层未调整好精度，所以模型输出的精度异常。此处不做展示。
 
 ###送分题答案为：  
-Input: Born in north-east France, Soyer trained as a
+Input: Born in north-east France, Soyer trained as a  
 Output:  chef before moving to London in the late
 
-[08/21/2023-06:50:35] [TRT-LLM] [I] TensorRT-LLM (total latency: 2.112626552581787 sec)
-[08/21/2023-06:50:35] [TRT-LLM] [I] TensorRT-LLM beam 0 result
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge1 : 14.700185379688484
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge2 : 3.75886473151702
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeL : 12.002855916633356
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeLsum : 13.092895095507263
-[08/21/2023-06:50:35] [TRT-LLM] [I] Hugging Face (total latency: 5.047713994979858 sec)
-[08/21/2023-06:50:35] [TRT-LLM] [I] HF beam 0 result
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge1 : 14.75593024343394
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rouge2 : 3.3647470801871733
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeL : 11.124766996533
-[08/21/2023-06:50:35] [TRT-LLM] [I]   rougeLsum : 13.0311280481106187
+![Alt text](image-4.png)  
